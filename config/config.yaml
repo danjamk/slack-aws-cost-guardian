@@ -1,0 +1,123 @@
+# Slack AWS Cost Guardian Configuration
+# Copy to config.{environment}.yaml and customize for your environment
+
+project_name: "slack-aws-cost-guardian"
+
+aws:
+  region: "us-east-1"
+  # account_id: ""  # Auto-detected if not provided
+
+# Cost collection settings
+collection:
+  schedule:
+    frequency: "4x_daily"  # Options: hourly, 4x_daily, 2x_daily, daily
+    hours: [6, 12, 18, 0]  # UTC hours (for 4x_daily)
+    timezone: "UTC"
+
+  sources:
+    cost_explorer:
+      enabled: true
+      granularity: "DAILY"
+      lookback_days: 14
+
+    budgets:
+      enabled: true
+
+  retention:
+    hourly_days: 7
+    daily_days: 90
+    monthly_days: 730  # 2 years
+
+# Budget configuration
+budgets:
+  monthly:
+    amount: 900
+    currency: "USD"
+    warning_threshold: 80   # Percentage
+    critical_threshold: 100
+
+  daily:
+    amount: 30
+    warning_threshold: 100
+
+# Anomaly detection
+anomaly_detection:
+  enabled: true
+  baseline_days: 14
+
+  thresholds:
+    absolute: 100          # $100 absolute increase
+    percent_change: 50     # 50% change from baseline
+    std_deviations: 2.5    # 2.5 std dev from mean
+
+  filters:
+    minimum_cost: 5        # Ignore anomalies under $5
+    new_service_minimum: 1 # New service threshold
+
+  alert_on_new_services: true
+
+# LLM configuration
+llm:
+  provider: "anthropic"  # Options: anthropic, openai
+
+  anthropic:
+    model_id: "claude-sonnet-4-20250514"
+    # api_key from Secrets Manager: cost-guardian/{env}/llm -> anthropic_api_key
+
+  openai:
+    model_id: "gpt-4o"
+    # api_key from Secrets Manager: cost-guardian/{env}/llm -> openai_api_key
+
+  temperature: 0.3
+  max_tokens: 2000
+
+# Slack configuration
+slack:
+  enabled: true
+
+  channels:
+    critical:
+      name: "#aws-alerts-critical"
+      webhook_secret_key: "webhook_url_critical"
+
+    heartbeat:
+      name: "#aws-alerts-general"
+      webhook_secret_key: "webhook_url_heartbeat"
+
+  features:
+    interactive_buttons: true
+    thread_replies: false  # Phase 2
+
+# Reporting
+reports:
+  daily:
+    enabled: true
+    schedule_hour: 8  # UTC
+    channel: "heartbeat"
+    include_ai_insights: true
+
+  weekly:
+    enabled: true
+    schedule_day: "monday"
+    schedule_hour: 8
+    channel: "heartbeat"
+    include_ai_insights: true
+
+# Notification routing
+routing:
+  budget_warning: "heartbeat"
+  budget_critical: "critical"
+  anomaly_warning: "heartbeat"
+  anomaly_critical: "critical"
+  daily_report: "heartbeat"
+  weekly_report: "heartbeat"
+
+# Guardian context (AI system context)
+guardian_context:
+  s3_key: "config/guardian-context.md"
+  local_path: "config/guardian-context.md"
+
+# Resource tags
+tags:
+  Project: "slack-aws-cost-guardian"
+  ManagedBy: "CDK"

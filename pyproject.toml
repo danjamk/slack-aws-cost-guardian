@@ -1,0 +1,59 @@
+[project]
+name = "slack-aws-cost-guardian"
+version = "0.1.0"
+description = "AI-powered AWS cost monitoring with Slack alerts"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+authors = [
+    {name = "Your Name", email = "your@email.com"}
+]
+keywords = ["aws", "cost", "monitoring", "slack", "ai", "serverless"]
+
+dependencies = [
+    "boto3>=1.34.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+    "black>=24.0",
+    "ruff>=0.3",
+    "mypy>=1.8",
+    "boto3-stubs[ce,budgets,dynamodb,sns,lambda,events,secretsmanager]>=1.34",
+]
+cdk = [
+    "aws-cdk-lib>=2.130",
+    "constructs>=10.0",
+]
+llm = [
+    "anthropic>=0.18",
+    "openai>=1.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/slack_aws_cost_guardian"]

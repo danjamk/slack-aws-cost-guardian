@@ -1,0 +1,5 @@
+# Lambda runtime dependencies
+# Note: boto3 is provided by AWS Lambda runtime, but we include it for consistency
+pydantic>=2.0.0,<3.0.0
+pyyaml>=6.0.0,<7.0.0
+requests>=2.28.0,<3.0.0

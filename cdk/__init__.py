@@ -1,0 +1,1 @@
+"""CDK infrastructure for Slack AWS Cost Guardian."""
