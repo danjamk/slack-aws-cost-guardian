@@ -7,6 +7,7 @@ import aws_cdk as cdk
 
 from cdk.stacks.storage_stack import StorageStack
 from cdk.stacks.collector_stack import CollectorStack
+from cdk.stacks.callback_stack import CallbackStack
 
 
 def main():
@@ -89,6 +90,30 @@ def main():
         value=collector_stack.slack_secret_arn,
         description="Secrets Manager ARN for Slack webhooks (populate after deployment)",
     )
+
+    cdk.CfnOutput(
+        collector_stack,
+        "LLMSecretArn",
+        value=collector_stack.llm_secret_arn,
+        description="Secrets Manager ARN for LLM API keys (populate after deployment)",
+    )
+
+    # Create the callback stack for Slack button handling
+    callback_stack = CallbackStack(
+        app,
+        f"CostGuardianCallback-{environment}",
+        environment=environment,
+        table=storage_stack.table,
+        slack_secret=collector_stack.slack_secret,
+        env=aws_env,
+    )
+
+    # Callback depends on collector (for slack_secret)
+    callback_stack.add_dependency(collector_stack)
+
+    # Apply tags to callback stack
+    for key, value in tags.items():
+        cdk.Tags.of(callback_stack).add(key, value)
 
     app.synth()
 

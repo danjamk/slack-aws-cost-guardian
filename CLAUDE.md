@@ -30,6 +30,21 @@ AI-powered AWS cost monitoring with Slack integration. Detects spending anomalie
 - `src/slack_aws_cost_guardian/` - Main Python package
 - `cdk/` - CDK infrastructure code
 
+## Configuration
+
+Secrets are managed via `.env` file (copy from `.env.example`):
+```bash
+cp .env.example .env
+# Edit .env with your values
+```
+
+The `.env` file contains:
+- `SLACK_WEBHOOK_CRITICAL` / `SLACK_WEBHOOK_HEARTBEAT` - Slack webhook URLs
+- `ANTHROPIC_API_KEY` - Claude API key for AI analysis (optional)
+- `OPENAI_API_KEY` - OpenAI API key as alternative (optional)
+
+`make deploy` automatically syncs `.env` values to AWS Secrets Manager.
+
 ## Development Commands
 ```bash
 # Activate environment
@@ -43,8 +58,12 @@ pytest tests/
 
 # Infrastructure (always use make, never cdk directly)
 make synth      # Synthesize CloudFormation
-make deploy     # Deploy all stacks
+make deploy     # Deploy all stacks (also configures secrets from .env)
 make destroy    # Tear down all stacks
+
+# Secrets setup (if not using .env)
+make setup-slack  # Interactive Slack webhook setup
+make setup-llm    # LLM API key setup
 
 # Testing
 make test-collect   # Test cost collection (dry run)

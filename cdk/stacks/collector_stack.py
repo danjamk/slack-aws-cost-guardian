@@ -23,6 +23,7 @@ class CollectorStack(Stack):
     Creates:
     - Cost Collector Lambda function
     - EventBridge schedule for periodic execution
+    - EventBridge schedules for daily and weekly reports
     - IAM role with permissions for Cost Explorer, DynamoDB, S3, Secrets Manager
     """
 
@@ -34,6 +35,8 @@ class CollectorStack(Stack):
         table: dynamodb.ITable,
         config_bucket: s3.IBucket,
         schedule_hours: list[int] | None = None,
+        daily_report_hour_utc: int = 14,  # 6am PST = 14:00 UTC
+        weekly_report_hour_utc: int = 14,  # 6am PST = 14:00 UTC
         **kwargs,
     ) -> None:
         """
@@ -46,14 +49,21 @@ class CollectorStack(Stack):
             table: DynamoDB table for cost data.
             config_bucket: S3 bucket for configuration.
             schedule_hours: UTC hours to run collection (default: [6, 12, 18, 0]).
+            daily_report_hour_utc: UTC hour for daily report (default: 14 = 6am PST).
+            weekly_report_hour_utc: UTC hour for weekly Monday report (default: 14 = 6am PST).
         """
         super().__init__(scope, construct_id, **kwargs)
 
         self.deploy_env = environment
         self.schedule_hours = schedule_hours or [6, 12, 18, 0]
+        self.daily_report_hour_utc = daily_report_hour_utc
+        self.weekly_report_hour_utc = weekly_report_hour_utc
 
         # Create the Slack webhook secret (user must populate after deployment)
         self.slack_secret = self._create_slack_secret()
+
+        # Create the LLM API key secret (user must populate after deployment)
+        self.llm_secret = self._create_llm_secret()
 
         # Create the Lambda function
         self.collector_function = self._create_collector_lambda(
@@ -67,8 +77,9 @@ class CollectorStack(Stack):
             config_bucket=config_bucket,
         )
 
-        # Create EventBridge schedule
+        # Create EventBridge schedules
         self._create_schedule()
+        self._create_report_schedules()
 
     def _create_slack_secret(self) -> secretsmanager.Secret:
         """Create the Secrets Manager secret for Slack webhooks."""
@@ -79,6 +90,19 @@ class CollectorStack(Stack):
             description="Slack webhook URLs for Cost Guardian notifications",
             generate_secret_string=secretsmanager.SecretStringGenerator(
                 secret_string_template='{"webhook_url_critical":"","webhook_url_heartbeat":""}',
+                generate_string_key="placeholder",  # Not used, just required
+            ),
+        )
+
+    def _create_llm_secret(self) -> secretsmanager.Secret:
+        """Create the Secrets Manager secret for LLM API keys."""
+        return secretsmanager.Secret(
+            self,
+            "LLMSecret",
+            secret_name=f"cost-guardian/{self.deploy_env}/llm",
+            description="LLM API keys for Cost Guardian AI analysis",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                secret_string_template='{"anthropic_api_key":"","openai_api_key":""}',
                 generate_string_key="placeholder",  # Not used, just required
             ),
         )
@@ -130,6 +154,7 @@ class CollectorStack(Stack):
                 "TABLE_NAME": table.table_name,
                 "CONFIG_BUCKET": config_bucket.bucket_name,
                 "SLACK_SECRET_NAME": self.slack_secret.secret_name,
+                "LLM_SECRET_NAME": self.llm_secret.secret_name,
                 "CONFIG_ENV": self.deploy_env,
             },
             description="Collects AWS cost data, detects anomalies, and sends notifications",
@@ -149,6 +174,7 @@ class CollectorStack(Stack):
 
         # Secrets Manager permissions
         self.slack_secret.grant_read(self.collector_function)
+        self.llm_secret.grant_read(self.collector_function)
 
         # Cost Explorer permissions
         self.collector_function.add_to_role_policy(
@@ -203,6 +229,45 @@ class CollectorStack(Stack):
             )
             rule.add_target(targets.LambdaFunction(self.collector_function))
 
+    def _create_report_schedules(self) -> None:
+        """Create EventBridge schedules for daily and weekly reports."""
+        # Daily report schedule (every day at configured hour)
+        daily_rule = events.Rule(
+            self,
+            "DailyReportSchedule",
+            rule_name=f"cost-guardian-daily-report-{self.deploy_env}",
+            description=f"Trigger daily cost report at {self.daily_report_hour_utc:02d}:00 UTC",
+            schedule=events.Schedule.cron(
+                minute="0",
+                hour=str(self.daily_report_hour_utc),
+            ),
+        )
+        daily_rule.add_target(
+            targets.LambdaFunction(
+                self.collector_function,
+                event=events.RuleTargetInput.from_object({"report_type": "daily"}),
+            )
+        )
+
+        # Weekly report schedule (Monday at configured hour)
+        weekly_rule = events.Rule(
+            self,
+            "WeeklyReportSchedule",
+            rule_name=f"cost-guardian-weekly-report-{self.deploy_env}",
+            description=f"Trigger weekly cost report on Monday at {self.weekly_report_hour_utc:02d}:00 UTC",
+            schedule=events.Schedule.cron(
+                minute="0",
+                hour=str(self.weekly_report_hour_utc),
+                week_day="MON",
+            ),
+        )
+        weekly_rule.add_target(
+            targets.LambdaFunction(
+                self.collector_function,
+                event=events.RuleTargetInput.from_object({"report_type": "weekly"}),
+            )
+        )
+
     @property
     def function_arn(self) -> str:
         """Get the Lambda function ARN."""
@@ -212,3 +277,8 @@ class CollectorStack(Stack):
     def slack_secret_arn(self) -> str:
         """Get the Slack secret ARN."""
         return self.slack_secret.secret_arn
+
+    @property
+    def llm_secret_arn(self) -> str:
+        """Get the LLM secret ARN."""
+        return self.llm_secret.secret_arn

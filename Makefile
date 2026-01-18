@@ -2,7 +2,8 @@
 # Common commands for development and deployment
 
 .PHONY: help install dev-install test lint format synth diff deploy destroy \
-        update-context invoke-collector setup-slack clean
+        update-context invoke-collector setup-slack setup-llm clean \
+        test-daily test-weekly backfill
 
 # Default environment
 ENV ?= dev
@@ -65,20 +66,62 @@ synth: ## Synthesize CDK stacks
 diff: ## Show CDK diff
 	cdk diff --all --context environment=$(ENV)
 
-deploy: ## Deploy all stacks and upload context if needed
+deploy: ## Deploy all stacks, configure secrets from .env
 	@echo "$(BLUE)Deploying Cost Guardian ($(ENV))...$(RESET)"
 	cdk deploy --all --context environment=$(ENV) --require-approval never
+	@echo ""
 	@echo "$(BLUE)Checking guardian context...$(RESET)"
 	@$(MAKE) _upload-context-if-missing ENV=$(ENV)
+	@echo ""
+	@$(MAKE) _configure-secrets-from-env ENV=$(ENV)
+	@echo ""
 	@echo "$(GREEN)Deployment complete!$(RESET)"
-	@echo ""
-	@echo "$(YELLOW)Next steps:$(RESET)"
-	@echo "1. Update Slack webhook URLs in Secrets Manager:"
-	@echo "   make setup-slack ENV=$(ENV)"
-	@echo ""
-	@echo "2. Customize your guardian context:"
-	@echo "   Edit config/guardian-context.md"
-	@echo "   make update-context ENV=$(ENV)"
+
+_configure-secrets-from-env:
+	@if [ -f .env ]; then \
+		. ./.env 2>/dev/null || true; \
+	fi && \
+	SLACK_SECRET=$$(aws cloudformation describe-stacks \
+		--stack-name CostGuardianCollector-$(ENV) \
+		--query 'Stacks[0].Outputs[?OutputKey==`SlackSecretArn`].OutputValue' \
+		--output text 2>/dev/null) && \
+	LLM_SECRET=$$(aws cloudformation describe-stacks \
+		--stack-name CostGuardianCollector-$(ENV) \
+		--query 'Stacks[0].Outputs[?OutputKey==`LLMSecretArn`].OutputValue' \
+		--output text 2>/dev/null) && \
+	SLACK_CONFIGURED=false && \
+	LLM_CONFIGURED=false && \
+	if [ -n "$$SLACK_WEBHOOK_CRITICAL" ] && [ -n "$$SLACK_WEBHOOK_HEARTBEAT" ]; then \
+		echo "$(BLUE)Configuring Slack secrets from .env...$(RESET)" && \
+		aws secretsmanager put-secret-value \
+			--secret-id "$$SLACK_SECRET" \
+			--secret-string "{\"webhook_url_critical\":\"$$SLACK_WEBHOOK_CRITICAL\",\"webhook_url_heartbeat\":\"$$SLACK_WEBHOOK_HEARTBEAT\",\"signing_secret\":\"$${SLACK_SIGNING_SECRET:-}\"}" >/dev/null && \
+		echo "$(GREEN)✓ Slack webhooks configured$(RESET)" && \
+		SLACK_CONFIGURED=true; \
+		if [ -z "$$SLACK_SIGNING_SECRET" ]; then \
+			echo "$(YELLOW)  Note: SLACK_SIGNING_SECRET not set (button clicks won't work)$(RESET)"; \
+		fi; \
+	fi && \
+	if [ -n "$$ANTHROPIC_API_KEY" ] || [ -n "$$OPENAI_API_KEY" ]; then \
+		echo "$(BLUE)Configuring LLM API key from .env...$(RESET)" && \
+		aws secretsmanager put-secret-value \
+			--secret-id "$$LLM_SECRET" \
+			--secret-string "{\"anthropic_api_key\":\"$${ANTHROPIC_API_KEY:-}\",\"openai_api_key\":\"$${OPENAI_API_KEY:-}\"}" >/dev/null && \
+		echo "$(GREEN)✓ LLM API key configured$(RESET)" && \
+		LLM_CONFIGURED=true; \
+	fi && \
+	if [ "$$SLACK_CONFIGURED" = "false" ]; then \
+		echo "" && \
+		echo "$(YELLOW)⚠ Slack webhooks not configured$(RESET)" && \
+		echo "  Run: make setup-slack" && \
+		echo "  Or add SLACK_WEBHOOK_CRITICAL and SLACK_WEBHOOK_HEARTBEAT to .env"; \
+	fi && \
+	if [ "$$LLM_CONFIGURED" = "false" ]; then \
+		echo "" && \
+		echo "$(YELLOW)⚠ LLM API key not configured (AI analysis disabled)$(RESET)" && \
+		echo "  Run: make setup-llm" && \
+		echo "  Or add ANTHROPIC_API_KEY to .env"; \
+	fi
 
 destroy: ## Destroy all stacks
 	@echo "$(YELLOW)WARNING: This will destroy all Cost Guardian resources for $(ENV)$(RESET)"
@@ -131,21 +174,12 @@ download-context: ## Download current guardian context from S3
 	echo "$(GREEN)Context downloaded to config/guardian-context.md$(RESET)"
 
 # ============================================================================
-# Slack Setup
+# Secrets Setup
 # ============================================================================
 
-setup-slack: ## Interactive setup for Slack webhook URLs
+setup-slack: ## Setup Slack webhook URLs (from .env or interactive)
 	@echo "$(BLUE)Setting up Slack webhooks...$(RESET)"
-	@echo ""
-	@echo "You need two Slack webhook URLs:"
-	@echo "  1. Critical alerts channel (e.g., #aws-alerts-critical)"
-	@echo "  2. General/heartbeat channel (e.g., #aws-alerts-general)"
-	@echo ""
-	@echo "Create webhooks at: https://api.slack.com/apps -> Incoming Webhooks"
-	@echo ""
-	@read -p "Critical channel webhook URL: " CRITICAL_URL && \
-	read -p "Heartbeat channel webhook URL: " HEARTBEAT_URL && \
-	SECRET_ARN=$$(aws cloudformation describe-stacks \
+	@SECRET_ARN=$$(aws cloudformation describe-stacks \
 		--stack-name CostGuardianCollector-$(ENV) \
 		--query 'Stacks[0].Outputs[?OutputKey==`SlackSecretArn`].OutputValue' \
 		--output text 2>/dev/null) && \
@@ -153,10 +187,69 @@ setup-slack: ## Interactive setup for Slack webhook URLs
 		echo "$(YELLOW)Stack not deployed yet. Run 'make deploy' first.$(RESET)"; \
 		exit 1; \
 	fi && \
+	if [ -f .env ]; then \
+		. ./.env 2>/dev/null || true; \
+	fi && \
+	if [ -n "$$SLACK_WEBHOOK_CRITICAL" ] && [ -n "$$SLACK_WEBHOOK_HEARTBEAT" ]; then \
+		echo "$(GREEN)Found Slack webhooks in .env$(RESET)" && \
+		CRITICAL_URL="$$SLACK_WEBHOOK_CRITICAL" && \
+		HEARTBEAT_URL="$$SLACK_WEBHOOK_HEARTBEAT"; \
+	else \
+		echo "" && \
+		echo "You need two Slack webhook URLs:" && \
+		echo "  1. Critical alerts channel (e.g., #aws-alerts-critical)" && \
+		echo "  2. General/heartbeat channel (e.g., #aws-alerts-general)" && \
+		echo "" && \
+		echo "Create webhooks at: https://api.slack.com/apps -> Incoming Webhooks" && \
+		echo "" && \
+		read -p "Critical channel webhook URL: " CRITICAL_URL && \
+		read -p "Heartbeat channel webhook URL: " HEARTBEAT_URL && \
+		echo "" && \
+		echo "$(YELLOW)Tip: Add these to .env for easier future deployments:$(RESET)" && \
+		echo "  SLACK_WEBHOOK_CRITICAL=$$CRITICAL_URL" && \
+		echo "  SLACK_WEBHOOK_HEARTBEAT=$$HEARTBEAT_URL" && \
+		echo ""; \
+	fi && \
 	aws secretsmanager put-secret-value \
 		--secret-id "$$SECRET_ARN" \
 		--secret-string "{\"webhook_url_critical\":\"$$CRITICAL_URL\",\"webhook_url_heartbeat\":\"$$HEARTBEAT_URL\"}" && \
 	echo "$(GREEN)Slack webhooks configured!$(RESET)"
+
+setup-llm: ## Setup LLM API key (from .env or shows instructions)
+	@echo "$(BLUE)Setting up LLM API key...$(RESET)"
+	@SECRET_ARN=$$(aws cloudformation describe-stacks \
+		--stack-name CostGuardianCollector-$(ENV) \
+		--query 'Stacks[0].Outputs[?OutputKey==`LLMSecretArn`].OutputValue' \
+		--output text 2>/dev/null) && \
+	if [ -z "$$SECRET_ARN" ]; then \
+		echo "$(YELLOW)Stack not deployed yet. Run 'make deploy' first.$(RESET)"; \
+		exit 1; \
+	fi && \
+	if [ -f .env ]; then \
+		. ./.env 2>/dev/null || true; \
+	fi && \
+	if [ -n "$$ANTHROPIC_API_KEY" ] || [ -n "$$OPENAI_API_KEY" ]; then \
+		ANTHROPIC_KEY=$${ANTHROPIC_API_KEY:-} && \
+		OPENAI_KEY=$${OPENAI_API_KEY:-} && \
+		echo "$(GREEN)Found LLM API key(s) in .env$(RESET)" && \
+		aws secretsmanager put-secret-value \
+			--secret-id "$$SECRET_ARN" \
+			--secret-string "{\"anthropic_api_key\":\"$$ANTHROPIC_KEY\",\"openai_api_key\":\"$$OPENAI_KEY\"}" && \
+		echo "$(GREEN)LLM API key configured!$(RESET)"; \
+	else \
+		echo "" && \
+		echo "$(YELLOW)No LLM API key found in .env$(RESET)" && \
+		echo "" && \
+		echo "To enable AI-powered analysis, either:" && \
+		echo "" && \
+		echo "  1. Add to .env and re-run this command:" && \
+		echo "     ANTHROPIC_API_KEY=sk-ant-api03-your-key-here" && \
+		echo "" && \
+		echo "  2. Or set manually:" && \
+		echo "     aws secretsmanager put-secret-value \\" && \
+		echo "       --secret-id $$SECRET_ARN \\" && \
+		echo "       --secret-string '{\"anthropic_api_key\":\"YOUR_KEY\"}'"; \
+	fi
 
 # ============================================================================
 # Testing & Debugging
@@ -199,6 +292,57 @@ test-full: ## Run full collection with storage and Slack (real run)
 	aws lambda invoke \
 		--function-name "$$FUNCTION_NAME" \
 		--payload '{"test_mode": true}' \
+		--cli-binary-format raw-in-base64-out \
+		--log-type Tail \
+		--query 'LogResult' \
+		--output text /tmp/collector-response.json | base64 -d && \
+	echo "" && \
+	echo "$(GREEN)Response:$(RESET)" && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
+test-daily: ## Send a daily summary report to Slack
+	@echo "$(BLUE)Generating daily summary report...$(RESET)"
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload '{"report_type": "daily", "test_mode": true}' \
+		--cli-binary-format raw-in-base64-out \
+		--log-type Tail \
+		--query 'LogResult' \
+		--output text /tmp/collector-response.json | base64 -d && \
+	echo "" && \
+	echo "$(GREEN)Response:$(RESET)" && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
+test-weekly: ## Send a weekly summary report to Slack
+	@echo "$(BLUE)Generating weekly summary report...$(RESET)"
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload '{"report_type": "weekly", "test_mode": true}' \
+		--cli-binary-format raw-in-base64-out \
+		--log-type Tail \
+		--query 'LogResult' \
+		--output text /tmp/collector-response.json | base64 -d && \
+	echo "" && \
+	echo "$(GREEN)Response:$(RESET)" && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
+# Default backfill days
+BACKFILL_DAYS ?= 30
+
+backfill: ## Backfill historical cost data (BACKFILL_DAYS=30)
+	@echo "$(BLUE)Backfilling $(BACKFILL_DAYS) days of historical cost data...$(RESET)"
+	@echo "$(YELLOW)This queries AWS Cost Explorer and stores snapshots in DynamoDB.$(RESET)"
+	@echo "$(YELLOW)Existing data will NOT be overwritten.$(RESET)"
+	@echo ""
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload '{"backfill_days": $(BACKFILL_DAYS), "test_mode": true}' \
 		--cli-binary-format raw-in-base64-out \
 		--log-type Tail \
 		--query 'LogResult' \

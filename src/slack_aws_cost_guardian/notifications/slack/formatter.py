@@ -139,6 +139,8 @@ class SlackFormatter:
         cost_data: CostData,
         budget_status: BudgetStatus | None = None,
         ai_insight: str | None = None,
+        report_date: str | None = None,
+        used_fallback: bool = False,
     ) -> dict[str, Any]:
         """
         Format a daily cost summary report (no buttons - informational only).
@@ -147,11 +149,22 @@ class SlackFormatter:
             cost_data: Collected cost data.
             budget_status: Optional budget information.
             ai_insight: Optional AI-generated insight.
+            report_date: The date being reported (YYYY-MM-DD). Defaults to today.
+            used_fallback: If True, indicates today's data is being used instead of yesterday's.
 
         Returns:
             Slack Block Kit message payload.
         """
-        date_str = datetime.utcnow().strftime("%B %d, %Y")
+        # Format the date for display
+        if report_date:
+            try:
+                dt = datetime.fromisoformat(report_date)
+                date_str = dt.strftime("%B %d, %Y")
+            except ValueError:
+                date_str = report_date
+        else:
+            date_str = datetime.utcnow().strftime("%B %d, %Y")
+
         trend_emoji = self.TREND_EMOJI.get(cost_data.trend, "")
 
         blocks = [
@@ -166,8 +179,23 @@ class SlackFormatter:
             },
         ]
 
-        # Cost summary
-        summary_parts = [f"*Yesterday's Spend*: ${cost_data.total_cost:.2f}"]
+        # Add fallback note if using today's data
+        if used_fallback:
+            blocks.append(
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": ":information_source: _Using today's data (yesterday's data not yet available)_",
+                        }
+                    ],
+                }
+            )
+
+        # Cost summary - label based on whether we're showing today or yesterday
+        spend_label = "Today's Spend" if used_fallback else "Yesterday's Spend"
+        summary_parts = [f"*{spend_label}*: ${cost_data.total_cost:.2f}"]
 
         if budget_status:
             summary_parts.append(
@@ -251,6 +279,124 @@ class SlackFormatter:
                 ],
             }
         )
+
+        return {"blocks": blocks}
+
+    def format_weekly_report(
+        self,
+        weekly_summary: dict,
+        ai_insight: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Format a weekly cost summary report (no buttons - informational only).
+
+        Args:
+            weekly_summary: Dict from build_weekly_summary with cost data.
+            ai_insight: Optional AI-generated insight.
+
+        Returns:
+            Slack Block Kit message payload.
+        """
+        start_date = weekly_summary.get("start_date", "")
+        end_date = weekly_summary.get("end_date", "")
+        total_cost = weekly_summary.get("total_cost", 0)
+        wow_change = weekly_summary.get("week_over_week_change", 0)
+        top_services = weekly_summary.get("top_services", [])
+        anomaly_count = weekly_summary.get("anomaly_count", 0)
+        mtd_cost = weekly_summary.get("mtd_cost", 0)
+        budget_percent = weekly_summary.get("budget_percent", 0)
+        forecast = weekly_summary.get("forecast", 0)
+        daily_avg = weekly_summary.get("daily_average", 0)
+
+        # Determine trend emoji
+        if wow_change > 10:
+            trend_emoji = ":chart_with_upwards_trend:"
+            change_text = f"+{wow_change:.1f}% vs last week"
+        elif wow_change < -10:
+            trend_emoji = ":chart_with_downwards_trend:"
+            change_text = f"{wow_change:.1f}% vs last week"
+        else:
+            trend_emoji = ":left_right_arrow:"
+            change_text = f"{wow_change:+.1f}% vs last week (stable)"
+
+        blocks = [
+            # Header
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": ":calendar: Weekly Cost Report",
+                    "emoji": True,
+                },
+            },
+            # Period
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Period*: {start_date} to {end_date}",
+                    }
+                ],
+            },
+        ]
+
+        # Week summary
+        blocks.append(
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Week Total*\n${total_cost:.2f}"},
+                    {"type": "mrkdwn", "text": f"*Daily Average*\n${daily_avg:.2f}"},
+                    {"type": "mrkdwn", "text": f"*Change*\n{trend_emoji} {change_text}"},
+                    {"type": "mrkdwn", "text": f"*Anomalies*\n{anomaly_count} detected"},
+                ],
+            }
+        )
+
+        blocks.append({"type": "divider"})
+
+        # Top services
+        if top_services:
+            service_lines = ["*Top 5 Services This Week*:"]
+            total = sum(s["cost"] for s in top_services)
+            for i, svc in enumerate(top_services, 1):
+                pct = (svc["cost"] / total * 100) if total > 0 else 0
+                service_lines.append(f"{i}. {svc['service']}: ${svc['cost']:.2f} ({pct:.0f}%)")
+
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "\n".join(service_lines)},
+                }
+            )
+
+        blocks.append({"type": "divider"})
+
+        # Month-to-date and forecast
+        forecast_warning = " :warning:" if budget_percent > 90 else ""
+        blocks.append(
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Month-to-Date*\n${mtd_cost:.2f} ({budget_percent:.0f}% of budget)"},
+                    {"type": "mrkdwn", "text": f"*Projected Month-End*\n${forecast:.2f}{forecast_warning}"},
+                ],
+            }
+        )
+
+        # AI Insight (if provided)
+        if ai_insight:
+            blocks.append({"type": "divider"})
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f":bulb: *AI Insight*\n{ai_insight}",
+                    },
+                }
+            )
 
         return {"blocks": blocks}
 
