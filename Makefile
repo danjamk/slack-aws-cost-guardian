@@ -3,7 +3,8 @@
 
 .PHONY: help setup test synth diff deploy destroy validate \
         update-context invoke-collector setup-slack setup-llm clean logs \
-        test-daily test-weekly backfill test-budget-warning test-budget-critical
+        test-daily test-weekly backfill test-budget-warning test-budget-critical \
+        info info-json info-secrets
 
 # Load environment from .env file (if exists)
 # Priority: command line > .env > default
@@ -417,6 +418,17 @@ describe-table: ## Show DynamoDB table info
 		--query 'Stacks[0].Outputs[?OutputKey==`TableName`].OutputValue' \
 		--output text 2>/dev/null) && \
 	aws dynamodb describe-table --table-name "$$TABLE_NAME"
+
+##@ Information
+
+info: ## Display deployment info and status overview
+	@python3 scripts/info.py --env $(ENV)
+
+info-json: ## Display deployment info as JSON
+	@python3 scripts/info.py --env $(ENV) --json
+
+info-secrets: ## Display deployment info with secrets revealed (use with caution)
+	@python3 scripts/info.py --env $(ENV) --show-secrets
 
 ##@ Operations
 

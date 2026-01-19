@@ -11,14 +11,14 @@ aws:
 collection:
   schedule:
     frequency: "4x_daily"  # Options: hourly, 4x_daily, 2x_daily, daily
-    hours: [6, 12, 18, 0]  # UTC hours (for 4x_daily)
+    hours: [6, 18]  # UTC hours (for 2x_daily)
     timezone: "UTC"
 
   sources:
     cost_explorer:
       enabled: true
       granularity: "DAILY"
-      lookback_days: 14
+      lookback_days: 28
 
     budgets:
       enabled: true
@@ -31,19 +31,19 @@ collection:
 # Budget configuration
 budgets:
   monthly:
-    amount: 900
+    amount: 5
     currency: "USD"
     warning_threshold: 80   # Percentage
     critical_threshold: 100
 
   daily:
-    amount: 30
+    amount: 1
     warning_threshold: 100
 
 # Anomaly detection
 anomaly_detection:
   enabled: true
-  baseline_days: 14
+  baseline_days: 28
 
   thresholds:
     absolute: 100          # $100 absolute increase
@@ -51,7 +51,7 @@ anomaly_detection:
     std_deviations: 2.5    # 2.5 std dev from mean
 
   filters:
-    minimum_cost: 5        # Ignore anomalies under $5
+    minimum_cost: 2        # Ignore anomalies under $2
     new_service_minimum: 1 # New service threshold
 
   alert_on_new_services: true
@@ -92,14 +92,14 @@ slack:
 reports:
   daily:
     enabled: true
-    schedule_hour: 8  # UTC
+    schedule_hour: 6  # UTC
     channel: "heartbeat"
     include_ai_insights: true
 
   weekly:
     enabled: true
     schedule_day: "monday"
-    schedule_hour: 8
+    schedule_hour: 7
     channel: "heartbeat"
     include_ai_insights: true
 
