@@ -4,7 +4,7 @@ Future enhancements and features for Slack AWS Cost Guardian.
 
 ## High Priority
 
-### AWS Budgets Integration
+### AWS Budgets Integration ([#2](https://github.com/danjamk/slack-aws-cost-guardian/issues/2))
 Integrate with AWS Budgets API to leverage existing budget configurations and alerts.
 
 **Goals:**
@@ -20,7 +20,7 @@ Integrate with AWS Budgets API to leverage existing budget configurations and al
 
 ---
 
-### Agentic Conversations (Thread-based)
+### Agentic Conversations (Thread-based) ([#3](https://github.com/danjamk/slack-aws-cost-guardian/issues/3))
 Enable interactive, multi-turn conversations in Slack threads for deeper cost investigation.
 
 **Goals:**
@@ -45,7 +45,7 @@ Enable interactive, multi-turn conversations in Slack threads for deeper cost in
 
 ## Medium Priority
 
-### CloudWatch Alarms for System Health
+### CloudWatch Alarms for System Health ([#4](https://github.com/danjamk/slack-aws-cost-guardian/issues/4))
 Add operational monitoring for the Cost Guardian system itself.
 
 **Candidates:**
@@ -60,7 +60,7 @@ Add operational monitoring for the Cost Guardian system itself.
 
 ---
 
-### Multi-Account Support
+### Multi-Account Support ([#5](https://github.com/danjamk/slack-aws-cost-guardian/issues/5))
 Monitor costs across multiple AWS accounts (AWS Organizations).
 
 **Goals:**
@@ -75,7 +75,7 @@ Monitor costs across multiple AWS accounts (AWS Organizations).
 
 ---
 
-### Cost Optimization Recommendations
+### Cost Optimization Recommendations ([#6](https://github.com/danjamk/slack-aws-cost-guardian/issues/6))
 Proactive suggestions for reducing costs based on usage patterns.
 
 **Ideas:**
@@ -86,7 +86,7 @@ Proactive suggestions for reducing costs based on usage patterns.
 
 ---
 
-### Historical Trend Dashboard
+### Historical Trend Dashboard ([#7](https://github.com/danjamk/slack-aws-cost-guardian/issues/7))
 Web-based dashboard for visualizing cost trends.
 
 **Options:**
@@ -98,7 +98,7 @@ Web-based dashboard for visualizing cost trends.
 
 ## Low Priority / Nice to Have
 
-### Slack App Distribution
+### Slack App Distribution ([#8](https://github.com/danjamk/slack-aws-cost-guardian/issues/8))
 Package as installable Slack app for easier onboarding.
 
 - OAuth flow for workspace installation
@@ -107,7 +107,7 @@ Package as installable Slack app for easier onboarding.
 
 ---
 
-### Email Digest Option
+### Email Digest Option ([#9](https://github.com/danjamk/slack-aws-cost-guardian/issues/9))
 Alternative delivery channel for users without Slack.
 
 - SES integration
@@ -116,7 +116,7 @@ Alternative delivery channel for users without Slack.
 
 ---
 
-### Forecast Accuracy Tracking
+### Forecast Accuracy Tracking ([#10](https://github.com/danjamk/slack-aws-cost-guardian/issues/10))
 Track how accurate cost forecasts are over time.
 
 - Compare forecasted vs actual at end of month
@@ -125,7 +125,7 @@ Track how accurate cost forecasts are over time.
 
 ---
 
-### Custom Alert Rules
+### Custom Alert Rules ([#11](https://github.com/danjamk/slack-aws-cost-guardian/issues/11))
 User-defined alerting beyond standard anomaly detection.
 
 - "Alert if EC2 exceeds $X/day"
