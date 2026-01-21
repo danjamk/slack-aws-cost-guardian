@@ -4,6 +4,66 @@ Future enhancements and features for Slack AWS Cost Guardian.
 
 ## High Priority
 
+### Interactive Bot Features (Phased Roadmap)
+
+A three-phase approach to making Cost Guardian an interactive Slack bot that users can query directly.
+
+#### Phase 1: Bot Identity + Direct Queries ([#16](https://github.com/danjamk/slack-aws-cost-guardian/issues/16))
+Create a proper Slack App with bot user (`@guardian`) for proactive cost queries.
+
+**Example interactions:**
+- `@guardian what did we spend yesterday?`
+- `@guardian show me EC2 costs for the last 7 days`
+- `@guardian what's the trend for RDS this month?`
+
+**Key deliverables:**
+- Slack App with bot user and Events API
+- LLM tool-use pattern for answering questions
+- Basic cost tools: `get_daily_costs`, `get_service_trend`, `get_account_breakdown`, `get_top_services`
+- New Lambda for handling Slack events
+
+**Why Phase 1 first:** Builds all foundational infrastructure (Events API, tool-use, LLM) that Phases 2 & 3 reuse.
+
+---
+
+#### Phase 2: Thread-based Alert Investigation ([#3](https://github.com/danjamk/slack-aws-cost-guardian/issues/3))
+Enable interactive, multi-turn conversations in Slack threads for deeper cost investigation.
+
+**Example flow:**
+1. Alert: "EC2 cost spike detected: +$150 (+45%)"
+2. User clicks "Investigate" button
+3. Bot responds in thread with context
+4. User asks follow-up: "What caused the spike?"
+5. Bot uses tools to answer with CloudTrail data, trends, etc.
+
+**Key deliverables:**
+- "Investigate" button on anomaly alerts
+- Conversation state management in DynamoDB
+- Multi-turn context handling in LLM
+- Thread-aware event handling
+
+**Prerequisite:** Phase 1 complete
+
+---
+
+#### Phase 3: Advanced Investigation Tools ([#18](https://github.com/danjamk/slack-aws-cost-guardian/issues/18))
+Extended tool library for deep cost investigation.
+
+**New tools:**
+- `get_recent_changes(service, hours)` - CloudTrail events that explain cost changes
+- `get_resource_info(resource_id)` - Describe EC2, RDS, Lambda with cost estimates
+- `compare_periods(period1, period2)` - Detailed period-over-period analysis
+- `get_usage_breakdown(service)` - Break down costs by usage type
+
+**Example interactions:**
+- "What changed in EC2 in the last 24 hours?"
+- "Describe the instance that's costing us the most"
+- "Compare this week to last week"
+
+**Prerequisites:** Phase 1 complete; Phase 2 recommended
+
+---
+
 ### AWS Budgets Integration ([#2](https://github.com/danjamk/slack-aws-cost-guardian/issues/2))
 Integrate with AWS Budgets API to leverage existing budget configurations and alerts.
 
@@ -17,29 +77,6 @@ Integrate with AWS Budgets API to leverage existing budget configurations and al
 - AWS Budgets already has SNS-based alerting - decide whether to replace or augment
 - May need to disable native Budget alerts to avoid duplication
 - Could import budget history for trend analysis
-
----
-
-### Agentic Conversations (Thread-based) ([#3](https://github.com/danjamk/slack-aws-cost-guardian/issues/3))
-Enable interactive, multi-turn conversations in Slack threads for deeper cost investigation.
-
-**Goals:**
-- User clicks "Investigate" button on an anomaly alert
-- Bot responds in a thread with initial analysis
-- User can ask follow-up questions: "What caused the EC2 spike?", "Show me the last 7 days"
-- Bot uses tools to query Cost Explorer, describe resources, check CloudTrail
-
-**Architecture:**
-- Slack Events API subscription (replaces simple webhooks)
-- Conversation state management (DynamoDB or in-memory)
-- Tool-use pattern with LLM (similar to function calling)
-- Rate limiting and cost controls on LLM usage
-
-**Tools to implement:**
-- `get_cost_breakdown(service, date_range)` - Detailed cost breakdown
-- `get_resource_info(resource_id)` - Describe EC2, RDS, etc.
-- `get_recent_changes(service, hours)` - CloudTrail events
-- `compare_periods(period1, period2)` - Period-over-period analysis
 
 ---
 
