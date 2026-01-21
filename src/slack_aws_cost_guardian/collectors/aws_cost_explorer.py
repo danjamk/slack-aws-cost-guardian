@@ -109,8 +109,13 @@ class CostExplorerCollector(CostCollector):
         forecast = self._get_forecast()
 
         # Calculate totals and trends
-        total_cost = sum(dc.cost for dc in daily_costs)
-        average_daily = total_cost / len(daily_costs) if daily_costs else 0
+        # total_cost should be yesterday's cost (matching cost_by_service)
+        # This ensures snapshots represent a single day for proper anomaly detection
+        total_cost = sum(cost_by_service.values())
+
+        # average_daily uses the full lookback period for trend context
+        lookback_total = sum(dc.cost for dc in daily_costs)
+        average_daily = lookback_total / len(daily_costs) if daily_costs else 0
         trend = self._calculate_trend(daily_costs)
 
         return CostData(
@@ -154,14 +159,31 @@ class CostExplorerCollector(CostCollector):
             return []
 
     def _get_cost_by_service(self, start_date: date, end_date: date) -> dict[str, float]:
-        """Get cost breakdown by AWS service."""
+        """
+        Get cost breakdown by AWS service for yesterday only.
+
+        For anomaly detection and daily snapshots, we need consistent single-day
+        costs per service. The start_date/end_date params are ignored here;
+        we always query yesterday's costs to ensure each snapshot represents
+        one day for proper baseline comparison.
+
+        The lookback period (start_date to end_date) is still used for:
+        - daily_costs: Historical trend data
+        - cost_by_account: Account-level aggregates
+        - forecast: End-of-month projections
+        """
+        # Always query yesterday's costs for service breakdown
+        yesterday = date.today() - timedelta(days=1)
+        query_start = yesterday
+        query_end = date.today()
+
         try:
             response = self.ce_client.get_cost_and_usage(
                 TimePeriod={
-                    "Start": start_date.isoformat(),
-                    "End": end_date.isoformat(),
+                    "Start": query_start.isoformat(),
+                    "End": query_end.isoformat(),
                 },
-                Granularity="MONTHLY",  # Aggregate for service breakdown
+                Granularity="DAILY",
                 Metrics=["UnblendedCost"],
                 GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
             )
@@ -172,10 +194,7 @@ class CostExplorerCollector(CostCollector):
                     service_name = group["Keys"][0]
                     cost = float(group["Metrics"]["UnblendedCost"]["Amount"])
                     if cost > 0.01:  # Filter out negligible costs
-                        # Aggregate across time periods
-                        cost_by_service[service_name] = (
-                            cost_by_service.get(service_name, 0) + round(cost, 2)
-                        )
+                        cost_by_service[service_name] = round(cost, 2)
 
             return cost_by_service
 
