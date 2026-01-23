@@ -1,4 +1,5 @@
 # Slack AWS Cost Guardian
+![slac-aws-cost-guardian-hero.png](slac-aws-cost-guardian-hero.png)
 
 > AI-powered AWS cost monitoring with Slack alerts
 
