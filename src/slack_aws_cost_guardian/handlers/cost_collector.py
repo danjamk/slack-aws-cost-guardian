@@ -42,7 +42,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     Environment variables:
     - TABLE_NAME: DynamoDB table name
     - CONFIG_BUCKET: S3 bucket for configuration
-    - SLACK_SECRET_NAME: Secrets Manager secret for Slack webhooks
+    - CONFIG_SECRET_NAME: Secrets Manager secret with all configuration
     - CONFIG_ENV: Environment (dev, staging, prod)
 
     Event parameters (for testing):
@@ -100,13 +100,16 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # Get environment variables
     table_name = os.environ.get("TABLE_NAME", f"cost-guardian-{config.environment}")
     config_bucket = os.environ.get("CONFIG_BUCKET", "")
-    slack_secret_name = os.environ.get(
-        "SLACK_SECRET_NAME", f"cost-guardian/{config.environment}/slack"
+    config_secret_name = os.environ.get(
+        "CONFIG_SECRET_NAME", f"cost-guardian/{config.environment}/config"
     )
 
     # Initialize clients
     storage = DynamoDBStorage(table_name)
-    cost_explorer = CostExplorerCollector(region=config.aws.region)
+    cost_explorer = CostExplorerCollector(
+        region=config.aws.region,
+        cost_data_lag_days=config.collection.sources.cost_explorer.cost_data_lag_days,
+    )
     budgets_collector = BudgetsCollector(region=config.aws.region)
     anomaly_detector = AnomalyDetector(config.anomaly_detection)
     slack_formatter = SlackFormatter()
@@ -125,12 +128,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # Initialize LLM client (if configured and not skipped)
     llm_client: LLMClient | None = None
-    llm_secret_name = os.environ.get("LLM_SECRET_NAME")
-    if llm_secret_name and not skip_llm:
+    if config_secret_name and not skip_llm:
         try:
             llm_client = LLMClient(
                 config=config.llm,
-                secret_name=llm_secret_name,
+                secret_name=config_secret_name,
                 region=config.aws.region,
             )
             print(f"LLM client initialized (provider: {config.llm.provider})")
@@ -243,7 +245,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         print("Sending Slack notifications...")
         try:
             webhook_manager = SlackWebhookManager(
-                secret_name=slack_secret_name,
+                secret_name=config_secret_name,
                 region=config.aws.region,
             )
 
@@ -320,7 +322,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 budget_info=test_budget_info,
                 threshold_type=force_budget_alert,
                 config=config,
-                slack_secret_name=slack_secret_name,
+                config_secret_name=config_secret_name,
                 llm_client=llm_client,
                 guardian_context=guardian_context,
                 test_mode=test_mode,
@@ -330,7 +332,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 budget_info=budget_info,
                 config=config,
                 storage=storage,
-                slack_secret_name=slack_secret_name,
+                config_secret_name=config_secret_name,
                 llm_client=llm_client,
                 guardian_context=guardian_context,
                 test_mode=test_mode,
@@ -383,6 +385,7 @@ def _create_snapshot(
         date=now.date().isoformat(),
         hour=now.hour,
         period_type="daily",
+        cost_data_date=getattr(cost_data, "cost_data_date", None),  # Actual date the service costs represent
         total_cost=cost_data.total_cost,
         currency=cost_data.currency,
         cost_by_service=cost_data.cost_by_service,
@@ -484,8 +487,8 @@ def _handle_report_generation(
     # Get environment variables
     table_name = os.environ.get("TABLE_NAME", f"cost-guardian-{config.environment}")
     config_bucket = os.environ.get("CONFIG_BUCKET", "")
-    slack_secret_name = os.environ.get(
-        "SLACK_SECRET_NAME", f"cost-guardian/{config.environment}/slack"
+    config_secret_name = os.environ.get(
+        "CONFIG_SECRET_NAME", f"cost-guardian/{config.environment}/config"
     )
 
     # Initialize storage
@@ -506,12 +509,11 @@ def _handle_report_generation(
 
     # Initialize LLM client (if configured and not skipped)
     llm_client: LLMClient | None = None
-    llm_secret_name = os.environ.get("LLM_SECRET_NAME")
-    if llm_secret_name and not skip_llm:
+    if config_secret_name and not skip_llm:
         try:
             llm_client = LLMClient(
                 config=config.llm,
-                secret_name=llm_secret_name,
+                secret_name=config_secret_name,
                 region=config.aws.region,
             )
             print(f"LLM client initialized (provider: {config.llm.provider})")
@@ -568,10 +570,16 @@ def _handle_report_generation(
     if report_type == "daily":
         # For daily, we need to convert to CostData format
         # Use the format_daily_report method which expects CostData
-        from slack_aws_cost_guardian.collectors.base import CostData, ForecastInfo
+        from slack_aws_cost_guardian.collectors.base import CostData, DailyCost, ForecastInfo
         from slack_aws_cost_guardian.storage.models import BudgetStatus
 
         top_services_dict = {s["service"]: s["cost"] for s in summary.get("top_services", [])}
+
+        # Convert recent_daily_costs to DailyCost objects for the formatter
+        recent_daily_costs = [
+            DailyCost(date=dc["date"], cost=dc["cost"])
+            for dc in summary.get("recent_daily_costs", [])
+        ]
 
         cost_data = CostData(
             start_date=summary.get("date", ""),
@@ -580,6 +588,7 @@ def _handle_report_generation(
             account_id="",
             total_cost=summary.get("total_cost", 0),
             cost_by_service=top_services_dict,
+            daily_costs=recent_daily_costs,  # For incomplete data footnote
             trend=summary.get("trend", "unknown"),
             average_daily_cost=summary.get("total_cost", 0),
         )
@@ -606,6 +615,8 @@ def _handle_report_generation(
             budget_status=budget_status,
             ai_insight=ai_insight,
             report_date=summary.get("date"),
+            cost_data_date=summary.get("cost_data_date"),
+            provider_costs=summary.get("provider_costs"),
             used_fallback=summary.get("used_fallback", False),
         )
     else:  # weekly
@@ -620,7 +631,7 @@ def _handle_report_generation(
         print("Sending report to Slack...")
         try:
             webhook_manager = SlackWebhookManager(
-                secret_name=slack_secret_name,
+                secret_name=config_secret_name,
                 region=config.aws.region,
             )
 
@@ -830,15 +841,15 @@ def _backfill_anthropic_costs(
 
     print(f"Querying Anthropic Cost API for {start_date} to {end_date}...")
 
-    llm_secret_name = os.environ.get("LLM_SECRET_NAME")
-    if not llm_secret_name:
-        print("Warning: LLM_SECRET_NAME not set, skipping Anthropic backfill")
+    config_secret_name = os.environ.get("CONFIG_SECRET_NAME")
+    if not config_secret_name:
+        print("Warning: CONFIG_SECRET_NAME not set, skipping Anthropic backfill")
         return {}
 
     try:
         # Get the admin API key from Secrets Manager
         secrets_client = boto3.client("secretsmanager", region_name=config.aws.region)
-        secret_response = secrets_client.get_secret_value(SecretId=llm_secret_name)
+        secret_response = secrets_client.get_secret_value(SecretId=config_secret_name)
         secrets = json.loads(secret_response["SecretString"])
 
         admin_api_key = secrets.get(config.collection.sources.anthropic.admin_api_key_secret_key)
@@ -927,7 +938,7 @@ def _check_and_send_budget_alert(
     budget_info: BudgetStatus,
     config: Any,
     storage: DynamoDBStorage,
-    slack_secret_name: str,
+    config_secret_name: str,
     llm_client: LLMClient | None,
     guardian_context: str,
     test_mode: bool,
@@ -942,7 +953,7 @@ def _check_and_send_budget_alert(
         budget_info: Current budget status.
         config: Application configuration.
         storage: DynamoDB storage client.
-        slack_secret_name: Secrets Manager secret name.
+        config_secret_name: Secrets Manager secret name.
         llm_client: Optional LLM client for AI recommendations.
         guardian_context: User context for AI.
         test_mode: Whether running in test mode.
@@ -1007,7 +1018,7 @@ def _check_and_send_budget_alert(
     try:
         slack_formatter = SlackFormatter()
         webhook_manager = SlackWebhookManager(
-            secret_name=slack_secret_name,
+            secret_name=config_secret_name,
             region=config.aws.region,
         )
 
@@ -1040,7 +1051,7 @@ def _send_budget_alert_direct(
     budget_info: BudgetStatus,
     threshold_type: str,
     config: Any,
-    slack_secret_name: str,
+    config_secret_name: str,
     llm_client: LLMClient | None,
     guardian_context: str,
     test_mode: bool,
@@ -1065,7 +1076,7 @@ def _send_budget_alert_direct(
     try:
         slack_formatter = SlackFormatter()
         webhook_manager = SlackWebhookManager(
-            secret_name=slack_secret_name,
+            secret_name=config_secret_name,
             region=config.aws.region,
         )
 
@@ -1144,15 +1155,15 @@ def _collect_anthropic_costs(config: Any) -> CostData | None:
     Returns:
         CostData with Anthropic costs, or None if collection fails.
     """
-    llm_secret_name = os.environ.get("LLM_SECRET_NAME")
-    if not llm_secret_name:
-        print("Warning: LLM_SECRET_NAME not set, cannot collect Anthropic costs")
+    config_secret_name = os.environ.get("CONFIG_SECRET_NAME")
+    if not config_secret_name:
+        print("Warning: CONFIG_SECRET_NAME not set, cannot collect Anthropic costs")
         return None
 
     try:
         # Get the admin API key from Secrets Manager
         secrets_client = boto3.client("secretsmanager", region_name=config.aws.region)
-        secret_response = secrets_client.get_secret_value(SecretId=llm_secret_name)
+        secret_response = secrets_client.get_secret_value(SecretId=config_secret_name)
         secrets = json.loads(secret_response["SecretString"])
 
         admin_api_key = secrets.get(config.collection.sources.anthropic.admin_api_key_secret_key)

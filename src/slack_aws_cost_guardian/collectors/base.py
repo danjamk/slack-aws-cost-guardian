@@ -76,6 +76,10 @@ class CostData:
     total_cost: float
     currency: str = "USD"
 
+    # The date the cost_by_service data actually represents
+    # (may differ from end_date due to cost_data_lag_days setting)
+    cost_data_date: str | None = None  # YYYY-MM-DD
+
     # Breakdown
     cost_by_service: dict[str, float] = field(default_factory=dict)
     cost_by_account: dict[str, AccountCostData] = field(default_factory=dict)
