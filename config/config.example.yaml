@@ -1,0 +1,242 @@
+# =============================================================================
+# Slack AWS Cost Guardian - Configuration Example
+# =============================================================================
+#
+# Copy this file to config.yaml and customize for your environment.
+# All values shown are defaults unless noted otherwise.
+#
+# Secrets (API keys, webhooks) are stored in AWS Secrets Manager, not here.
+# Run `make configure-secrets` to set up secrets from your .env file.
+#
+# =============================================================================
+# COST SUMMARY - What running this tool costs you:
+# =============================================================================
+#
+# AWS Cost Explorer API: $0.01 per request
+#   - Each collection run makes ~5 API calls = $0.05 per run
+#   - Daily collection:    ~$1.50/month  (recommended for personal accounts)
+#   - 2x daily collection: ~$3.00/month  (good balance)
+#   - 4x daily collection: ~$6.00/month  (for high-spend production)
+#
+# Other AWS costs (minimal):
+#   - Lambda: ~$0/month (free tier covers it)
+#   - DynamoDB: ~$0.01-0.05/month (on-demand, minimal storage)
+#   - Secrets Manager: ~$0.40/month per secret
+#   - S3: ~$0.01/month (config storage)
+#
+# LLM API costs (for AI insights):
+#   - Anthropic Claude: ~$0.003-0.01 per analysis
+#   - OpenAI GPT-4o: ~$0.01-0.03 per analysis
+#   - With daily reports: ~$0.30-1.00/month
+#
+# TOTAL ESTIMATED COST: $2-8/month depending on settings
+#
+# =============================================================================
+
+project_name: "slack-aws-cost-guardian"
+
+# -----------------------------------------------------------------------------
+# AWS Configuration
+# -----------------------------------------------------------------------------
+aws:
+  region: "us-east-1"
+  # account_id: ""  # Auto-detected from STS if not provided
+
+# -----------------------------------------------------------------------------
+# Cost Collection Settings
+# -----------------------------------------------------------------------------
+# Controls how often and what data is collected from AWS Cost Explorer.
+#
+# COST IMPACT: Each collection run costs ~$0.05 (5 API calls at $0.01 each)
+#   - 4x daily = ~$6/month
+#   - 2x daily = ~$3/month  (recommended for most users)
+#   - daily    = ~$1.50/month
+#
+collection:
+  schedule:
+    # How often to collect cost data
+    # Options: hourly, 4x_daily, 2x_daily, daily
+    #
+    # Recommended:
+    #   - Personal/low-spend accounts: "daily" (~$1.50/month)
+    #   - Production accounts: "2x_daily" (~$3/month)
+    #   - High-spend/critical: "4x_daily" (~$6/month)
+    frequency: "daily"
+
+    # UTC hours to run collection
+    # For daily: specify 1 hour, e.g., [12] = 12 PM UTC = 6 AM CST
+    # For 2x_daily: specify 2 hours, e.g., [6, 18]
+    # For 4x_daily: specify 4 hours, e.g., [0, 6, 12, 18]
+    hours: [12]
+
+    timezone: "UTC"
+
+  sources:
+    cost_explorer:
+      enabled: true
+
+      # DAILY is recommended - HOURLY costs more and adds complexity
+      granularity: "DAILY"
+
+      # How many days of historical data to fetch each run
+      # Used for trend calculation and baseline comparison
+      # 7 days is sufficient for most use cases
+      lookback_days: 7
+
+      # Days to wait before querying cost data (for accuracy)
+      # AWS Cost Explorer takes 24-48 hours to fully populate
+      # 2 = query data from 2 days ago (recommended)
+      cost_data_lag_days: 2
+
+    budgets:
+      # Also fetch AWS Budgets data (if you have budgets configured)
+      enabled: true
+
+    # Anthropic API cost tracking (requires Organization account)
+    anthropic:
+      enabled: false
+      # admin_api_key_secret_key: "anthropic_admin_api_key"
+
+  # How long to keep historical data in DynamoDB
+  retention:
+    hourly_days: 7      # Hourly snapshots (if using HOURLY granularity)
+    daily_days: 90      # Daily snapshots
+    monthly_days: 730   # Monthly aggregates (2 years)
+
+# -----------------------------------------------------------------------------
+# Budget Configuration
+# -----------------------------------------------------------------------------
+# Set your spending limits and alert thresholds.
+#
+budgets:
+  monthly:
+    amount: 100           # Your monthly budget in USD
+    currency: "USD"
+    warning_threshold: 80   # Alert at 80% of budget
+    critical_threshold: 100 # Alert at 100% of budget
+
+  daily:
+    amount: 5             # Daily spending cap (budget / 30)
+    warning_threshold: 100  # Alert when daily exceeds 100%
+
+# -----------------------------------------------------------------------------
+# Anomaly Detection
+# -----------------------------------------------------------------------------
+# Detects unusual spending patterns by comparing current costs to baseline.
+#
+anomaly_detection:
+  enabled: true
+
+  # Days of history to use for calculating baseline
+  # Longer = more stable baseline, slower to adapt
+  # Shorter = adapts faster, may have more false positives
+  baseline_days: 14
+
+  thresholds:
+    # An anomaly is detected if ANY of these thresholds are exceeded:
+    absolute: 10          # Dollar increase from baseline (e.g., $10)
+    percent_change: 50    # Percentage change (e.g., 50% increase)
+    std_deviations: 2.5   # Statistical deviation from mean
+
+  filters:
+    # Ignore anomalies below these amounts (reduces noise)
+    minimum_cost: 2       # Ignore if total cost < $2
+    new_service_minimum: 1  # Ignore new services costing < $1
+
+  # Alert when a service appears for the first time
+  alert_on_new_services: true
+
+# -----------------------------------------------------------------------------
+# LLM Configuration (AI Analysis)
+# -----------------------------------------------------------------------------
+# Powers the AI-generated insights in reports and anomaly analysis.
+# API keys are stored in Secrets Manager, not here.
+#
+llm:
+  # Options: anthropic, openai
+  provider: "anthropic"
+
+  anthropic:
+    model_id: "claude-sonnet-4-20250514"
+    # API key from: Secrets Manager -> cost-guardian/{env}/config -> anthropic_api_key
+
+  openai:
+    model_id: "gpt-4o"
+    # API key from: Secrets Manager -> cost-guardian/{env}/config -> openai_api_key
+
+  # Lower = more focused/deterministic, Higher = more creative
+  temperature: 0.3
+
+  # Maximum tokens in AI response
+  max_tokens: 2000
+
+# -----------------------------------------------------------------------------
+# Slack Configuration
+# -----------------------------------------------------------------------------
+# Webhook URLs are stored in Secrets Manager, not here.
+#
+slack:
+  enabled: true
+
+  # Define your notification channels
+  channels:
+    critical:
+      name: "#aws-alerts"           # Channel for urgent alerts
+      webhook_secret_key: "webhook_url_critical"
+
+    heartbeat:
+      name: "#aws-monitoring"       # Channel for routine reports
+      webhook_secret_key: "webhook_url_heartbeat"
+
+  features:
+    interactive_buttons: true   # Feedback buttons on anomaly alerts
+    thread_replies: false       # Future: reply in threads
+
+# -----------------------------------------------------------------------------
+# Report Configuration
+# -----------------------------------------------------------------------------
+reports:
+  daily:
+    enabled: true
+    schedule_hour: 14     # UTC hour (14 = 6 AM PST / 8 AM CST)
+    channel: "heartbeat"
+    include_ai_insights: true
+
+  weekly:
+    enabled: true
+    schedule_day: "monday"
+    schedule_hour: 14
+    channel: "heartbeat"
+    include_ai_insights: true
+
+# -----------------------------------------------------------------------------
+# Notification Routing
+# -----------------------------------------------------------------------------
+# Which channel receives which notification type.
+#
+routing:
+  budget_warning: "heartbeat"
+  budget_critical: "critical"
+  anomaly_warning: "heartbeat"
+  anomaly_critical: "critical"
+  daily_report: "heartbeat"
+  weekly_report: "heartbeat"
+
+# -----------------------------------------------------------------------------
+# Guardian Context
+# -----------------------------------------------------------------------------
+# Path to the markdown file containing context about your AWS environment.
+# This is included in AI prompts for more relevant analysis.
+#
+guardian_context:
+  s3_key: "config/guardian-context.md"
+  local_path: "config/guardian-context.md"
+
+# -----------------------------------------------------------------------------
+# Resource Tags
+# -----------------------------------------------------------------------------
+# Tags applied to all AWS resources created by this project.
+#
+tags:
+  Project: "slack-aws-cost-guardian"
+  ManagedBy: "CDK"

@@ -84,8 +84,20 @@ def build_daily_summary(
     if latest.forecast:
         forecast = latest.forecast.end_of_month
 
+    # cost_data_date is the actual date the service costs represent
+    # (may differ from snapshot date due to cost_data_lag_days)
+    cost_data_date = latest.cost_data_date or target_date
+
+    # Get recent daily costs for the "incomplete data" footnote
+    # These are more recent dates that may not be fully populated yet
+    recent_daily_costs = _get_recent_daily_costs(storage, cost_data_date)
+
+    # Calculate provider-specific costs (AWS vs Claude)
+    provider_costs = _calculate_provider_costs(latest.cost_by_service)
+
     return {
         "date": target_date,
+        "cost_data_date": cost_data_date,  # Actual date the costs represent
         "total_cost": latest.total_cost,
         "top_services": [
             {"service": service, "cost": cost} for service, cost in top_services
@@ -94,7 +106,9 @@ def build_daily_summary(
         "budget_percent": budget_percent,
         "budget_monthly": budget_monthly,
         "budget_spent": budget_spent,
-        "forecast": forecast,
+        "forecast": forecast,  # AWS-only forecast
+        "provider_costs": provider_costs,  # Costs broken down by provider
+        "recent_daily_costs": recent_daily_costs,  # For incomplete data footnote
         "has_data": True,
         "used_fallback": used_fallback,
     }
@@ -223,6 +237,75 @@ def build_weekly_summary(
         "forecast": forecast,
         "has_data": True,
     }
+
+
+def _calculate_provider_costs(cost_by_service: dict[str, float]) -> dict[str, float]:
+    """
+    Calculate costs grouped by provider.
+
+    Services are identified by prefix:
+    - "Claude::" prefix → Claude/Anthropic API costs
+    - Everything else → AWS costs
+
+    Args:
+        cost_by_service: Dict of service name to cost.
+
+    Returns:
+        Dict with "aws" and "claude" keys containing total costs for each.
+    """
+    aws_total = 0.0
+    claude_total = 0.0
+
+    for service, cost in cost_by_service.items():
+        if service.startswith("Claude::"):
+            claude_total += cost
+        else:
+            aws_total += cost
+
+    return {
+        "aws": round(aws_total, 2),
+        "claude": round(claude_total, 2),
+    }
+
+
+def _get_recent_daily_costs(
+    storage: DynamoDBStorage,
+    cost_data_date: str,
+) -> list[dict[str, Any]]:
+    """
+    Get daily costs for dates after cost_data_date (incomplete/recent data).
+
+    These are dates more recent than the "accurate" cost_data_date,
+    shown as a heads-up that data is still populating.
+
+    Args:
+        storage: DynamoDB storage client.
+        cost_data_date: The date of accurate cost data (YYYY-MM-DD).
+
+    Returns:
+        List of {"date": str, "cost": float} for recent days.
+    """
+    today = datetime.now(UTC).date()
+    cost_date = datetime.fromisoformat(cost_data_date).date()
+
+    recent_costs = []
+
+    # Get days between cost_data_date and today (exclusive of cost_data_date)
+    current = cost_date + timedelta(days=1)
+    while current <= today:
+        date_str = current.isoformat()
+        snapshots = storage.get_snapshots_for_date(date_str)
+
+        if snapshots:
+            latest = max(snapshots, key=lambda s: s.hour)
+            recent_costs.append({
+                "date": date_str,
+                "cost": latest.total_cost,
+            })
+
+        current += timedelta(days=1)
+
+    return recent_costs
 
 
 def _calculate_trend(storage: DynamoDBStorage, latest: CostSnapshot) -> str:

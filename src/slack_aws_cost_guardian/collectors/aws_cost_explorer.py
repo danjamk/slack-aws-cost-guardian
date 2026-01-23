@@ -38,6 +38,7 @@ class CostExplorerCollector(CostCollector):
         self,
         region: str = "us-east-1",
         granularity: Literal["DAILY", "HOURLY", "MONTHLY"] = "DAILY",
+        cost_data_lag_days: int = 2,
         ce_client: boto3.client | None = None,
         sts_client: boto3.client | None = None,
     ):
@@ -47,11 +48,14 @@ class CostExplorerCollector(CostCollector):
         Args:
             region: AWS region for the Cost Explorer API.
             granularity: Cost granularity (DAILY recommended for cost efficiency).
+            cost_data_lag_days: Days to wait for data to populate (default 2).
+                AWS Cost Explorer data takes 24-48 hours to become accurate.
             ce_client: Optional boto3 Cost Explorer client.
             sts_client: Optional boto3 STS client for account ID.
         """
         self.region = region
         self.granularity = granularity
+        self.cost_data_lag_days = cost_data_lag_days
         self._ce_client = ce_client
         self._sts_client = sts_client
         self._account_id: str | None = None
@@ -108,6 +112,10 @@ class CostExplorerCollector(CostCollector):
         cost_by_account = self._get_cost_by_account(start_date, end_date)
         forecast = self._get_forecast()
 
+        # Calculate the actual date the cost_by_service data represents
+        # (cost_data_lag_days ago, for accuracy)
+        cost_data_date = (date.today() - timedelta(days=self.cost_data_lag_days)).isoformat()
+
         # Calculate totals and trends
         # total_cost should be yesterday's cost (matching cost_by_service)
         # This ensures snapshots represent a single day for proper anomaly detection
@@ -125,6 +133,7 @@ class CostExplorerCollector(CostCollector):
             account_id=self.account_id,
             total_cost=round(total_cost, 2),
             currency="USD",
+            cost_data_date=cost_data_date,
             cost_by_service=cost_by_service,
             cost_by_account=cost_by_account,
             daily_costs=daily_costs,
@@ -160,22 +169,22 @@ class CostExplorerCollector(CostCollector):
 
     def _get_cost_by_service(self, start_date: date, end_date: date) -> dict[str, float]:
         """
-        Get cost breakdown by AWS service for yesterday only.
+        Get cost breakdown by AWS service for a single day.
 
         For anomaly detection and daily snapshots, we need consistent single-day
         costs per service. The start_date/end_date params are ignored here;
-        we always query yesterday's costs to ensure each snapshot represents
-        one day for proper baseline comparison.
+        we query costs from `cost_data_lag_days` ago to ensure data has fully
+        populated (AWS Cost Explorer takes 24-48 hours for accurate data).
 
         The lookback period (start_date to end_date) is still used for:
         - daily_costs: Historical trend data
         - cost_by_account: Account-level aggregates
         - forecast: End-of-month projections
         """
-        # Always query yesterday's costs for service breakdown
-        yesterday = date.today() - timedelta(days=1)
-        query_start = yesterday
-        query_end = date.today()
+        # Query costs from N days ago to allow data to fully populate
+        target_date = date.today() - timedelta(days=self.cost_data_lag_days)
+        query_start = target_date
+        query_end = target_date + timedelta(days=1)
 
         try:
             response = self.ce_client.get_cost_and_usage(
@@ -193,8 +202,8 @@ class CostExplorerCollector(CostCollector):
                 for group in result.get("Groups", []):
                     service_name = group["Keys"][0]
                     cost = float(group["Metrics"]["UnblendedCost"]["Amount"])
-                    if cost > 0.01:  # Filter out negligible costs
-                        cost_by_service[service_name] = round(cost, 2)
+                    if cost > 0.001:  # Filter out negligible costs (< $0.001)
+                        cost_by_service[service_name] = round(cost, 4)
 
             return cost_by_service
 
@@ -222,7 +231,7 @@ class CostExplorerCollector(CostCollector):
                 for group in result.get("Groups", []):
                     account_id = group["Keys"][0]
                     cost = float(group["Metrics"]["UnblendedCost"]["Amount"])
-                    if cost > 0.01:
+                    if cost > 0.001:  # Filter out negligible costs (< $0.001)
                         if account_id not in cost_by_account:
                             cost_by_account[account_id] = AccountCostData(
                                 account_id=account_id,
@@ -353,8 +362,8 @@ class CostExplorerCollector(CostCollector):
                 for group in result.get("Groups", []):
                     service_name = group["Keys"][0]
                     cost = float(group["Metrics"]["UnblendedCost"]["Amount"])
-                    if cost > 0.01:
-                        cost_by_service[service_name] = round(cost, 2)
+                    if cost > 0.001:  # Filter out negligible costs (< $0.001)
+                        cost_by_service[service_name] = round(cost, 4)
 
             return cost_by_service
 

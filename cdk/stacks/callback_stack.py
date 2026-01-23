@@ -28,7 +28,6 @@ class CallbackStack(Stack):
         construct_id: str,
         environment: str,
         table: dynamodb.ITable,
-        slack_secret: secretsmanager.ISecret,
         **kwargs,
     ) -> None:
         """
@@ -39,18 +38,24 @@ class CallbackStack(Stack):
             construct_id: Stack ID.
             environment: Deployment environment (dev, staging, prod).
             table: DynamoDB table for storing feedback.
-            slack_secret: Secrets Manager secret containing signing_secret.
         """
         super().__init__(scope, construct_id, **kwargs)
 
         self.deploy_env = environment
 
+        # Import config secret by name (avoids cross-stack reference issues)
+        config_secret = secretsmanager.Secret.from_secret_name_v2(
+            self,
+            "ConfigSecret",
+            secret_name=f"cost-guardian/{environment}/config",
+        )
+
         # Create the callback Lambda
-        self.callback_function = self._create_callback_lambda(table, slack_secret)
+        self.callback_function = self._create_callback_lambda(table, config_secret)
 
         # Grant permissions
         table.grant_read_write_data(self.callback_function)
-        slack_secret.grant_read(self.callback_function)
+        config_secret.grant_read(self.callback_function)
 
         # Create Function URL (public - security via signature verification)
         self.function_url = self.callback_function.add_function_url(
@@ -68,7 +73,7 @@ class CallbackStack(Stack):
     def _create_callback_lambda(
         self,
         table: dynamodb.ITable,
-        slack_secret: secretsmanager.ISecret,
+        config_secret: secretsmanager.ISecret,
     ) -> lambda_.Function:
         """Create the Slack callback Lambda function."""
         return lambda_.Function(
@@ -110,7 +115,7 @@ class CallbackStack(Stack):
             memory_size=256,
             environment={
                 "TABLE_NAME": table.table_name,
-                "SLACK_SECRET_NAME": slack_secret.secret_name,
+                "CONFIG_SECRET_NAME": config_secret.secret_name,
             },
             description="Handles Slack interactive button clicks for feedback",
         )

@@ -18,6 +18,9 @@ class CostExplorerSourceConfig(BaseModel):
     enabled: bool = True
     granularity: Literal["DAILY", "HOURLY"] = "DAILY"
     lookback_days: int = Field(default=14, ge=1, le=90)
+    # Cost data lag: how many days to wait for data to fully populate
+    # AWS Cost Explorer data takes 24-48 hours to become accurate
+    cost_data_lag_days: int = Field(default=2, ge=1, le=7)
 
 
 class BudgetsSourceConfig(BaseModel):

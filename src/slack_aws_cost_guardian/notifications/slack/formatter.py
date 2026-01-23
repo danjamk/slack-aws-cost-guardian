@@ -188,6 +188,8 @@ class SlackFormatter:
         budget_status: BudgetStatus | None = None,
         ai_insight: str | None = None,
         report_date: str | None = None,
+        cost_data_date: str | None = None,
+        provider_costs: dict[str, float] | None = None,
         used_fallback: bool = False,
     ) -> dict[str, Any]:
         """
@@ -197,23 +199,43 @@ class SlackFormatter:
             cost_data: Collected cost data.
             budget_status: Optional budget information.
             ai_insight: Optional AI-generated insight.
-            report_date: The date being reported (YYYY-MM-DD). Defaults to today.
+            report_date: The date the snapshot was taken (YYYY-MM-DD). Defaults to today.
+            cost_data_date: The actual date the cost data represents (may differ due to lag).
+            provider_costs: Dict with "aws" and "claude" keys containing costs per provider.
             used_fallback: If True, indicates today's data is being used instead of yesterday's.
 
         Returns:
             Slack Block Kit message payload.
         """
-        # Format the date for display
-        if report_date:
+        # Use cost_data_date if provided (the actual date costs represent)
+        # Fall back to report_date or today
+        display_date = cost_data_date or report_date
+        if display_date:
             try:
-                dt = datetime.fromisoformat(report_date)
+                dt = datetime.fromisoformat(display_date)
                 date_str = dt.strftime("%B %d, %Y")
             except ValueError:
-                date_str = report_date
+                date_str = display_date
         else:
             date_str = datetime.now(UTC).strftime("%B %d, %Y")
 
         trend_emoji = self.TREND_EMOJI.get(cost_data.trend, "")
+        spend_label = "Today" if used_fallback else "Yesterday"
+
+        # Calculate provider costs if not provided
+        if provider_costs is None:
+            aws_cost = 0.0
+            claude_cost = 0.0
+            for service, cost in cost_data.cost_by_service.items():
+                if service.startswith("Claude::"):
+                    claude_cost += cost
+                else:
+                    aws_cost += cost
+            provider_costs = {"aws": aws_cost, "claude": claude_cost}
+
+        aws_cost = provider_costs.get("aws", 0.0)
+        claude_cost = provider_costs.get("claude", 0.0)
+        has_claude = claude_cost > 0
 
         blocks = [
             # Header
@@ -241,34 +263,60 @@ class SlackFormatter:
                 }
             )
 
-        # Cost summary - label based on whether we're showing today or yesterday
-        spend_label = "Today's Spend" if used_fallback else "Yesterday's Spend"
-        summary_parts = [f"*{spend_label}*: ${cost_data.total_cost:.2f}"]
+        # AWS Costs section
+        aws_lines = [f"*:aws: AWS Costs*"]
+        aws_lines.append(f"• {spend_label}: ${aws_cost:.2f}")
 
         if budget_status:
-            summary_parts.append(
-                f"*Month-to-Date*: ${budget_status.monthly_spent:.2f} "
+            # Budget status is AWS-only (from AWS Budgets API)
+            aws_lines.append(
+                f"• Month-to-Date: ${budget_status.monthly_spent:.2f} "
                 f"({budget_status.monthly_percent:.0f}% of ${budget_status.monthly_budget:.0f} budget)"
             )
 
         if cost_data.forecast:
+            # Forecast is AWS-only (from AWS Cost Explorer API)
             forecast_pct = (
                 (cost_data.forecast.forecasted_total / budget_status.monthly_budget * 100)
                 if budget_status and budget_status.monthly_budget > 0
                 else 0
             )
             warning = " :warning:" if forecast_pct > 100 else ""
-            summary_parts.append(
-                f"*Projected Month-End*: ${cost_data.forecast.forecasted_total:.2f} "
+            aws_lines.append(
+                f"• Forecast: ${cost_data.forecast.forecasted_total:.2f} "
                 f"({forecast_pct:.0f}% of budget){warning}"
             )
 
         blocks.append(
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(summary_parts)},
+                "text": {"type": "mrkdwn", "text": "\n".join(aws_lines)},
             }
         )
+
+        # Claude API Costs section (only if there are Claude costs)
+        if has_claude:
+            claude_lines = [f"*:robot_face: Claude API Costs*"]
+            claude_lines.append(f"• {spend_label}: ${claude_cost:.2f}")
+            # Note: No forecast available for Claude - would need Anthropic API for that
+
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "\n".join(claude_lines)},
+                }
+            )
+
+            # Combined Total section
+            combined_lines = [f"*:moneybag: Combined Total*"]
+            combined_lines.append(f"• {spend_label}: ${cost_data.total_cost:.2f}")
+
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "\n".join(combined_lines)},
+                }
+            )
 
         blocks.append({"type": "divider"})
 
@@ -318,13 +366,49 @@ class SlackFormatter:
 
         # Footer with timestamp
         timestamp = _get_central_timestamp()
+        footer_text = f"Period: {cost_data.start_date} to {cost_data.end_date} | Generated {timestamp}"
         blocks.append(
             {
                 "type": "context",
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Period: {cost_data.start_date} to {cost_data.end_date} | Generated {timestamp}",
+                        "text": footer_text,
+                    }
+                ],
+            }
+        )
+
+        # Show recent incomplete data (days after cost_data_date) if available
+        # These are more recent days that may not be fully populated yet
+        if cost_data.daily_costs:
+            sorted_costs = sorted(cost_data.daily_costs, key=lambda x: x.date)
+
+            if sorted_costs:
+                recent_lines = []
+                for dc in sorted_costs:
+                    recent_lines.append(f"{dc.date}: ${dc.cost:.2f}")
+
+                blocks.append(
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f":hourglass_flowing_sand: _Recent data (still populating): {' | '.join(recent_lines)}_",
+                            }
+                        ],
+                    }
+                )
+
+        # Add latency warning
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "_Note: AWS Cost Explorer data takes 24-48 hours to fully populate._",
                     }
                 ],
             }

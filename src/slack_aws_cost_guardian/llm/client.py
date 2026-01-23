@@ -8,8 +8,9 @@ import boto3
 from botocore.exceptions import ClientError
 
 from slack_aws_cost_guardian.config.schema import LLMConfig
-from slack_aws_cost_guardian.llm.base import LLMMessage, LLMProvider, LLMResponse
+from slack_aws_cost_guardian.llm.base import LLMMessage, LLMProvider, LLMResponse, LLMTool
 from slack_aws_cost_guardian.llm.providers import AnthropicProvider, OpenAIProvider
+from slack_aws_cost_guardian.llm.tools.registry import ToolRegistry
 
 
 class LLMClient:
@@ -264,4 +265,105 @@ class LLMClient:
 
         except Exception as e:
             print(f"Weekly insight generation failed: {e}")
+            return None
+
+    def answer_cost_question(
+        self,
+        question: str,
+        user_context: str | None,
+        tool_registry: ToolRegistry,
+        tools: list[LLMTool],
+        system_prompt: str,
+        max_iterations: int = 5,
+    ) -> str | None:
+        """
+        Answer a user's cost question using tools.
+
+        Implements a tool-use loop where the LLM can call tools to fetch data,
+        then generate a final response.
+
+        Args:
+            question: The user's question about costs.
+            user_context: Optional user context from guardian-context.md.
+            tool_registry: Registry with tool implementations.
+            tools: List of tool definitions for the LLM.
+            system_prompt: System prompt for the cost query assistant.
+            max_iterations: Maximum tool-use iterations (default 5).
+
+        Returns:
+            Answer text if successful, None on failure.
+        """
+        try:
+            provider = self._get_provider()
+
+            # Build initial messages
+            full_system_prompt = system_prompt
+            if user_context:
+                full_system_prompt += f"\n\n## User's Infrastructure Context\n{user_context}"
+
+            messages: list[LLMMessage] = [
+                LLMMessage(role="system", content=full_system_prompt),
+                LLMMessage(role="user", content=question),
+            ]
+
+            total_input_tokens = 0
+            total_output_tokens = 0
+
+            # Tool-use loop
+            for iteration in range(max_iterations):
+                print(f"Tool-use iteration {iteration + 1}/{max_iterations}")
+
+                response = provider.chat_with_tools(messages, tools)
+                total_input_tokens += response.usage.get("input_tokens", 0)
+                total_output_tokens += response.usage.get("output_tokens", 0)
+
+                # Check if we're done (no tool calls)
+                if not response.tool_calls:
+                    print(
+                        f"Answer generated: {total_input_tokens} in, "
+                        f"{total_output_tokens} out ({iteration + 1} iterations)"
+                    )
+                    return response.content
+
+                # Execute tool calls
+                print(f"Executing {len(response.tool_calls)} tool call(s)")
+
+                # Add assistant message WITH tool calls
+                # This is critical - the tool_use blocks must be in the assistant message
+                # so that subsequent tool_result blocks have corresponding tool_use IDs
+                messages.append(
+                    LLMMessage(
+                        role="assistant",
+                        content=response.content or "",
+                        tool_calls=response.tool_calls,
+                    )
+                )
+
+                # Execute each tool and collect results
+                tool_results = []
+                for tool_call in response.tool_calls:
+                    print(f"  Tool: {tool_call.name}({tool_call.arguments})")
+                    result = tool_registry.execute(tool_call)
+                    tool_results.append(result)
+
+                    if result.is_error:
+                        print(f"  Error: {result.content}")
+
+                # Add all tool results as a single message
+                # (Anthropic expects tool_results to follow the assistant's tool_use)
+                for result in tool_results:
+                    messages.append(
+                        LLMMessage(
+                            role="tool",
+                            content=result.content,
+                            tool_call_id=result.tool_call_id,
+                        )
+                    )
+
+            # Max iterations reached without final answer
+            print(f"Max iterations ({max_iterations}) reached without final answer")
+            return "I'm having trouble finding the information. Could you try rephrasing your question?"
+
+        except Exception as e:
+            print(f"Cost question answering failed: {e}")
             return None

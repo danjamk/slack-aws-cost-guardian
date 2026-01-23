@@ -8,21 +8,21 @@ Future enhancements and features for Slack AWS Cost Guardian.
 
 A three-phase approach to making Cost Guardian an interactive Slack bot that users can query directly.
 
-#### Phase 1: Bot Identity + Direct Queries ([#16](https://github.com/danjamk/slack-aws-cost-guardian/issues/16))
-Create a proper Slack App with bot user (`@guardian`) for proactive cost queries.
+#### Phase 1: Bot Identity + Direct Queries - COMPLETE ([#16](https://github.com/danjamk/slack-aws-cost-guardian/issues/16))
 
-**Example interactions:**
+**Status:** Implemented and deployed.
+
+Users can now @mention the bot or send DMs to ask cost questions:
 - `@guardian what did we spend yesterday?`
 - `@guardian show me EC2 costs for the last 7 days`
-- `@guardian what's the trend for RDS this month?`
+- `@guardian what's the trend for Secrets Manager this month?`
 
-**Key deliverables:**
+**Delivered:**
 - Slack App with bot user and Events API
 - LLM tool-use pattern for answering questions
-- Basic cost tools: `get_daily_costs`, `get_service_trend`, `get_account_breakdown`, `get_top_services`
-- New Lambda for handling Slack events
-
-**Why Phase 1 first:** Builds all foundational infrastructure (Events API, tool-use, LLM) that Phases 2 & 3 reuse.
+- Cost tools: `get_daily_costs`, `get_service_trend`, `get_cost_summary`, `get_top_services`
+- Events Lambda with deduplication (handles Slack retries)
+- Provider-separated cost display (AWS vs Claude costs)
 
 ---
 
@@ -180,3 +180,8 @@ User-defined alerting beyond standard anomaly detection.
 - [x] Budget threshold alerts (80% warning, 100% critical)
 - [x] Historical data backfill command
 - [x] Configuration validation (`make validate`)
+- [x] Anthropic Claude API cost collection ([#13](https://github.com/danjamk/slack-aws-cost-guardian/issues/13))
+- [x] **Interactive Bot - Phase 1**: Bot identity + direct queries ([#16](https://github.com/danjamk/slack-aws-cost-guardian/issues/16))
+  - @mention and DM support
+  - LLM tool-use for cost queries
+  - Provider-separated cost display (AWS vs Claude)

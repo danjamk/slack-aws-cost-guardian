@@ -42,7 +42,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     Environment variables:
     - TABLE_NAME: DynamoDB table name
-    - SLACK_SECRET_NAME: Secrets Manager secret with signing_secret
+    - CONFIG_SECRET_NAME: Secrets Manager secret with signing_secret
 
     Args:
         event: Lambda Function URL event.
@@ -121,7 +121,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
 def _get_signing_secret() -> str | None:
     """Retrieve Slack signing secret from Secrets Manager."""
-    secret_name = os.environ.get("SLACK_SECRET_NAME")
+    secret_name = os.environ.get("CONFIG_SECRET_NAME")
     if not secret_name:
         return None
 
